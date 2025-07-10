@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  coordinator:
+    build: .
+    ports:
+      - "8000:8000"
+    command: python -m coordinator.main
+    depends_on:
+      - worker-1
+      - worker-2
+      - worker-3
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - ai-network
+
+  worker-1:
+    build: .
+    ports:
+      - "8001:8000"
+    command: python -m worker.main
+    environment:
+      - WORKER_ID=worker-1
+      - PYTHONPATH=/app
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - ai-network
+
+  worker-2:
+    build: .
+    ports:
+      - "8002:8000"
+    command: python -m worker.main
+    environment:
+      - WORKER_ID=worker-2
+      - PYTHONPATH=/app
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - ai-network
+
+  worker-3:
+    build: .
+    ports:
+      - "8003:8000"
+    command: python -m worker.main
+    environment:
+      - WORKER_ID=worker-3
+      - PYTHONPATH=/app
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - ai-network
+
+networks:
+  ai-network:
+    driver: bridge
