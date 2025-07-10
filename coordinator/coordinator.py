@@ -124,8 +124,50 @@ class Coordinator:
         
         return max(score, 0.0)
             
+    def get_worker_capabilities(self, worker_id: str) -> List[TaskType]:
+        """Get the task types a worker can handle"""
+        worker_capabilities = {
+            "worker-1": [TaskType.TEXT_CLASSIFICATION],  # DistilBERT specialist
+            "worker-2": [TaskType.IMAGE_CLASSIFICATION, TaskType.TEXT_CLASSIFICATION],  # MobileNet + fallback
+            "worker-3": [TaskType.CLIP_TEXT_SIMILARITY, TaskType.CLIP_TEXT_TO_IMAGE, TaskType.TEXT_CLASSIFICATION]  # CLIP + fallback
+        }
+        return worker_capabilities.get(worker_id, [TaskType.TEXT_CLASSIFICATION])
+    
+    async def get_best_worker_for_task(self, task_type: TaskType) -> Optional[Tuple[str, dict]]:
+        """Get the best available worker that can handle the specific task type"""
+        # First, get workers that can handle this task type
+        capable_workers = []
+        for worker_id, worker_data in self.workers.items():
+            if (worker_data["status"].status in ["healthy", "busy"] and 
+                worker_data["status"].current_tasks < worker_data["status"].max_tasks and
+                task_type in self.get_worker_capabilities(worker_id)):
+                capable_workers.append((worker_id, worker_data))
+        
+        if not capable_workers:
+            # If no specialist available, try any healthy worker (they all have text classification fallback)
+            capable_workers = [
+                (worker_id, worker_data) for worker_id, worker_data in self.workers.items() 
+                if worker_data["status"].status in ["healthy", "busy"] and 
+                   worker_data["status"].current_tasks < worker_data["status"].max_tasks
+            ]
+        
+        if not capable_workers:
+            return None
+        
+        # Sort by worker score (best first)
+        scored_workers = [
+            (self.calculate_worker_score(worker_data), worker_id, worker_data)
+            for worker_id, worker_data in capable_workers
+        ]
+        
+        scored_workers.sort(reverse=True)  # Highest score first
+        
+        if scored_workers[0][0] > 0:  # Make sure we have a viable worker
+            return scored_workers[0][1], scored_workers[0][2]  # worker_id, worker_data
+        
+        return None
     async def get_best_worker(self) -> Optional[Tuple[str, dict]]:
-        """Get the best available worker based on health, load, and performance"""
+        """Get the best available worker based on health, load, and performance (legacy method)"""
         available_workers = [
             (worker_id, worker_data) for worker_id, worker_data in self.workers.items() 
             if worker_data["status"].status in ["healthy", "busy"] and 
@@ -186,10 +228,10 @@ class Coordinator:
                     except asyncio.TimeoutError:
                         continue  # No tasks available, continue loop
                     
-                    # Check if we have available workers
-                    worker_result = await self.get_best_worker()
+                    # Check if we have available workers for this specific task
+                    worker_result = await self.get_best_worker_for_task(task.request.task_type)
                     if not worker_result:
-                        # No workers available, put task back in queue with delay
+                        # No capable workers available, put task back in queue with delay
                         await asyncio.sleep(0.5)
                         await self.task_queue.put((-task.priority, time.time(), task))
                         continue
@@ -278,7 +320,10 @@ class Coordinator:
                 )
                 
             else:
-                error_text = await response.text()
+                try:
+                    error_text = await response.text()
+                except:
+                    error_text = f"HTTP {response.status_code}"
                 raise Exception(f"Worker returned {response.status_code}: {error_text}")
                 
         except Exception as e:
