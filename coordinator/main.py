@@ -1,11 +1,11 @@
 import asyncio
 import uuid
 from fastapi import FastAPI, BackgroundTasks
-from coordinator.coordinator import SmartCoordinator
+from coordinator.coordinator import Coordinator
 from shared.models import InferenceRequest, TaskType
 
-app = FastAPI(title="Smart AI Inference Coordinator")
-coordinator = SmartCoordinator()
+app = FastAPI(title="AI Inference Coordinator")
+coordinator = Coordinator()
 
 @app.on_event("startup")
 async def startup_event():
