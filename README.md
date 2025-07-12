@@ -25,7 +25,7 @@ git clone https://github.com/vijaysamula/sereact_dl_task.git
 cd sereact_dl_task
 
 # Start all services
-docker-compose up --build
+docker compose up --build
 
 # Wait 3-5 minutes for models to load
 # Look for "Models loaded successfully" messages
@@ -136,7 +136,7 @@ python burst_traffic_test.py --pattern burst
 ### 3. Failure Simulation
 ```bash
 # Stop a worker to test fault tolerance
-docker-compose stop worker-1
+docker compose stop worker-1
 
 # System automatically routes to other workers
 ```
@@ -146,7 +146,7 @@ docker-compose stop worker-1
 **Models not loading?**
 ```bash
 # Check worker logs
-docker-compose logs worker-1
+docker compose logs worker-1
 
 # Ensure sufficient memory
 docker stats
