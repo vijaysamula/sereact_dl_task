@@ -1,7 +1,9 @@
+# Updated shared/logging_setup.py
+
 import logging
 import json
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 class TaskLogger:
     """Centralized logging for all task operations with metadata"""
@@ -32,8 +34,9 @@ class TaskLogger:
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
     
-    def log_task_assignment(self, request_id: str, worker_id: str, task_type: str, retry_count: int = 0):
-        """Log task assignment to worker"""
+    def log_task_assignment(self, request_id: str, worker_id: str, task_type: str, 
+                          retry_count: int = 0, extra_context: Optional[Dict[str, Any]] = None):
+        """Log task assignment to worker with load balancing context"""
         metadata = {
             "event": "task_assigned",
             "request_id": request_id,
@@ -42,11 +45,16 @@ class TaskLogger:
             "retry_count": retry_count,
             "timestamp": time.time()
         }
+        
+        if extra_context:
+            metadata.update(extra_context)
+            
         self.logger.info(f"TASK_ASSIGNED: {json.dumps(metadata)}")
     
     def log_task_completion(self, request_id: str, worker_id: str, latency: float, 
-                          retry_count: int, success: bool, error: str = None):
-        """Log task completion with results"""
+                          retry_count: int, success: bool, error: str = None,
+                          extra_context: Optional[Dict[str, Any]] = None):
+        """Log task completion with results and context"""
         metadata = {
             "event": "task_completed",
             "request_id": request_id,
@@ -57,6 +65,10 @@ class TaskLogger:
             "error": error,
             "timestamp": time.time()
         }
+        
+        if extra_context:
+            metadata.update(extra_context)
+            
         self.logger.info(f"TASK_COMPLETED: {json.dumps(metadata)}")
     
     def log_task_retry(self, request_id: str, worker_id: str, retry_count: int, reason: str):
@@ -71,7 +83,8 @@ class TaskLogger:
         }
         self.logger.info(f"TASK_RETRY: {json.dumps(metadata)}")
     
-    def log_worker_status(self, worker_id: str, status: str, current_tasks: int, details: Dict[str, Any] = None):
+    def log_worker_status(self, worker_id: str, status: str, current_tasks: int, 
+                         details: Dict[str, Any] = None):
         """Log worker status changes"""
         metadata = {
             "event": "worker_status",
@@ -93,6 +106,19 @@ class TaskLogger:
             "timestamp": time.time()
         }
         self.logger.info(f"SYSTEM_STATS: {json.dumps(metadata)}")
+    
+    def log_load_balancing_decision(self, request_id: str, task_type: str, 
+                                  selected_worker: str, available_workers: Dict[str, float]):
+        """Log load balancing decisions"""
+        metadata = {
+            "event": "load_balancing_decision",
+            "request_id": request_id,
+            "task_type": task_type,
+            "selected_worker": selected_worker,
+            "available_workers": available_workers,
+            "timestamp": time.time()
+        }
+        self.logger.info(f"LOAD_BALANCING: {json.dumps(metadata)}")
 
 # Global task logger instance
 task_logger = TaskLogger()

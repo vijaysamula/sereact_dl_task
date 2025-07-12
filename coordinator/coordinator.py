@@ -3,6 +3,7 @@ import time
 import uuid
 import logging
 import heapq
+import math
 from typing import Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException
 import httpx
@@ -14,20 +15,42 @@ logger = logging.getLogger(__name__)
 
 class Coordinator:
     def __init__(self):
-        self.workers: Dict[str, dict] = {}  # worker_id -> {status: WorkerStatus, url: str}
+        self.workers: Dict[str, dict] = {}
         self.task_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
-        self.active_tasks: Dict[str, dict] = {}  # request_id -> task info
+        self.active_tasks: Dict[str, dict] = {}
         self.client = httpx.AsyncClient(timeout=30.0)
         self.queue_processor_running = False
         self.stats = {
             "total_requests": 0,
             "successful_requests": 0,
             "failed_requests": 0,
-            "queue_high_watermark": 0
+            "queue_high_watermark": 0,
+            "task_type_distribution": {
+                "text_classification": 0,
+                "image_classification": 0,
+                "clip_text_similarity": 0,
+                "clip_text_to_image": 0
+            }
         }
+    
+    def make_json_safe(self, obj):
+        """Make data structure JSON-safe by replacing inf/nan values"""
+        if isinstance(obj, dict):
+            return {k: self.make_json_safe(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self.make_json_safe(item) for item in obj]
+        elif isinstance(obj, float):
+            if math.isinf(obj):
+                return 999999.0 if obj > 0 else -999999.0
+            elif math.isnan(obj):
+                return 0.0
+            else:
+                return obj
+        else:
+            return obj
         
     async def register_worker(self, worker_id: str, worker_url: str):
-        """Register a new worker"""
+        """Register a new worker - all workers are now universal"""
         self.workers[worker_id] = {
             "status": WorkerStatus(
                 worker_id=worker_id,
@@ -41,13 +64,16 @@ class Coordinator:
             ),
             "url": worker_url
         }
-        logger.info(f"Worker {worker_id} registered at {worker_url}")
-        task_logger.log_worker_status(worker_id, "starting", 0, {"url": worker_url})
+        logger.info(f"Worker {worker_id} registered at {worker_url} (Universal: supports all task types)")
+        task_logger.log_worker_status(worker_id, "starting", 0, {
+            "url": worker_url, 
+            "capability": "universal_all_models"
+        })
         
     async def health_check_workers(self):
         """Periodically check worker health and update status"""
         while True:
-            await asyncio.sleep(5)  # Wait before starting checks
+            await asyncio.sleep(5)
             
             for worker_id, worker_data in self.workers.items():
                 try:
@@ -58,15 +84,14 @@ class Coordinator:
                         health_data = response.json()
                         status = worker_data["status"]
                         
-                        # Update worker status based on health and current load
+                        # Update worker status based on load
                         if status.current_tasks >= status.max_tasks:
                             new_status = "busy"
                         elif status.current_tasks > 0:
-                            new_status = "healthy"
+                            new_status = "active"
                         else:
                             new_status = "healthy"
                         
-                        # Log status changes
                         if status.status != new_status:
                             task_logger.log_worker_status(worker_id, new_status, status.current_tasks)
                             
@@ -75,118 +100,69 @@ class Coordinator:
                         status.model_loaded = health_data.get("models_loaded", False)
                         
                         if worker_data["status"].status == "starting" and status.model_loaded:
-                            logger.info(f"Worker {worker_id} is now healthy and ready")
+                            logger.info(f"Worker {worker_id} is now healthy and ready (Universal capability)")
                             status.status = "healthy"
-                            task_logger.log_worker_status(worker_id, "healthy", 0, {"models_ready": True})
+                            task_logger.log_worker_status(worker_id, "healthy", 0, {"all_models_ready": True})
                         
                     else:
                         if worker_data["status"].status != "error":
                             task_logger.log_worker_status(worker_id, "error", worker_data["status"].current_tasks, 
                                                         {"health_check_status": response.status_code})
                         worker_data["status"].status = "error"
-                        logger.warning(f"Worker {worker_id} health check failed: {response.status_code}")
                         
                 except Exception as e:
                     if worker_data["status"].status != "error":
                         task_logger.log_worker_status(worker_id, "error", worker_data["status"].current_tasks, 
                                                     {"error": str(e)})
                     worker_data["status"].status = "error"
-                    logger.warning(f"Worker {worker_id} health check failed: {str(e)}")
                     
-            # Log system stats periodically
-            healthy_workers = len([w for w in self.workers.values() if w["status"].status == "healthy"])
+            # Log system stats
+            healthy_workers = len([w for w in self.workers.values() if w["status"].status in ["healthy", "active"]])
             task_logger.log_queue_stats(self.task_queue.qsize(), len(self.active_tasks), healthy_workers)
                     
-            await asyncio.sleep(10)  # Check every 10 seconds
+            await asyncio.sleep(10)
 
-    def calculate_worker_score(self, worker_data: dict) -> float:
-        """Calculate worker suitability score (higher = better)"""
+    def calculate_worker_load_score(self, worker_data: dict) -> float:
+        """Calculate worker load score for pure load balancing (lower = better)"""
         status = worker_data["status"]
         
-        if status.status != "healthy":
-            return 0.0
+        if status.status not in ["healthy", "active"]:
+            return 999999.0  # ✅ Use large number instead of float('inf')
         
-        # Base score
-        score = 100.0
+        # Base load score (0-100)
+        load_percentage = (status.current_tasks / max(status.max_tasks, 1)) * 100
         
-        # Penalize based on current load
-        load_factor = status.current_tasks / max(status.max_tasks, 1)
-        score -= load_factor * 50  # Heavy penalty for high load
+        # Performance factor (lower latency = better score)
+        latency_penalty = status.avg_latency * 10 if status.avg_latency > 0 else 0
         
-        # Reward based on performance (lower latency = higher score)
-        if status.avg_latency > 0:
-            latency_penalty = min(status.avg_latency * 10, 30)  # Cap penalty at 30
-            score -= latency_penalty
+        # Combined score (lower is better)
+        total_score = load_percentage + latency_penalty
         
-        # Small bonus for workers with more experience
-        experience_bonus = min(status.total_processed * 0.1, 10)
-        score += experience_bonus
-        
-        return max(score, 0.0)
-            
-    def get_worker_capabilities(self, worker_id: str) -> List[TaskType]:
-        """Get the task types a worker can handle"""
-        worker_capabilities = {
-            "worker-1": [TaskType.TEXT_CLASSIFICATION],  # DistilBERT specialist
-            "worker-2": [TaskType.IMAGE_CLASSIFICATION, TaskType.TEXT_CLASSIFICATION],  # MobileNet + fallback
-            "worker-3": [TaskType.CLIP_TEXT_SIMILARITY, TaskType.CLIP_TEXT_TO_IMAGE, TaskType.TEXT_CLASSIFICATION]  # CLIP + fallback
-        }
-        return worker_capabilities.get(worker_id, [TaskType.TEXT_CLASSIFICATION])
+        return total_score
     
-    async def get_best_worker_for_task(self, task_type: TaskType) -> Optional[Tuple[str, dict]]:
-        """Get the best available worker that can handle the specific task type"""
-        # First, get workers that can handle this task type
-        capable_workers = []
-        for worker_id, worker_data in self.workers.items():
-            if (worker_data["status"].status in ["healthy", "busy"] and 
-                worker_data["status"].current_tasks < worker_data["status"].max_tasks and
-                task_type in self.get_worker_capabilities(worker_id)):
-                capable_workers.append((worker_id, worker_data))
-        
-        if not capable_workers:
-            # If no specialist available, try any healthy worker (they all have text classification fallback)
-            capable_workers = [
-                (worker_id, worker_data) for worker_id, worker_data in self.workers.items() 
-                if worker_data["status"].status in ["healthy", "busy"] and 
-                   worker_data["status"].current_tasks < worker_data["status"].max_tasks
-            ]
-        
-        if not capable_workers:
-            return None
-        
-        # Sort by worker score (best first)
-        scored_workers = [
-            (self.calculate_worker_score(worker_data), worker_id, worker_data)
-            for worker_id, worker_data in capable_workers
-        ]
-        
-        scored_workers.sort(reverse=True)  # Highest score first
-        
-        if scored_workers[0][0] > 0:  # Make sure we have a viable worker
-            return scored_workers[0][1], scored_workers[0][2]  # worker_id, worker_data
-        
-        return None
-    async def get_best_worker(self) -> Optional[Tuple[str, dict]]:
-        """Get the best available worker based on health, load, and performance (legacy method)"""
+    async def get_best_worker_by_load(self) -> Optional[Tuple[str, dict]]:
+        """Get the best available worker based purely on current load"""
         available_workers = [
             (worker_id, worker_data) for worker_id, worker_data in self.workers.items() 
-            if worker_data["status"].status in ["healthy", "busy"] and 
+            if worker_data["status"].status in ["healthy", "active"] and 
                worker_data["status"].current_tasks < worker_data["status"].max_tasks
         ]
         
         if not available_workers:
             return None
         
-        # Sort by worker score (best first)
+        # Sort by load score (lowest first = least loaded)
         scored_workers = [
-            (self.calculate_worker_score(worker_data), worker_id, worker_data)
+            (self.calculate_worker_load_score(worker_data), worker_id, worker_data)
             for worker_id, worker_data in available_workers
         ]
         
-        scored_workers.sort(reverse=True)  # Highest score first
+        scored_workers.sort()  # Lowest score first (least loaded)
         
-        if scored_workers[0][0] > 0:  # Make sure we have a viable worker
-            return scored_workers[0][1], scored_workers[0][2]  # worker_id, worker_data
+        if scored_workers[0][0] < 999999.0:  # ✅ Check against large number instead of float('inf')
+            worker_id, worker_data = scored_workers[0][1], scored_workers[0][2]
+            logger.debug(f"Selected worker {worker_id} for load balancing (score: {scored_workers[0][0]:.2f})")
+            return worker_id, worker_data
         
         return None
     
@@ -200,7 +176,12 @@ class Coordinator:
             max_retries=3
         )
         
-        # Use negative priority for max-heap behavior (higher priority first)
+        # Track task type distribution
+        task_type_str = str(request.task_type).replace("TaskType.", "").lower()
+        if task_type_str in self.stats["task_type_distribution"]:
+            self.stats["task_type_distribution"][task_type_str] += 1
+        
+        # Use negative priority for max-heap behavior
         await self.task_queue.put((-priority, time.time(), task))
         
         # Update queue stats
@@ -208,35 +189,39 @@ class Coordinator:
         if current_queue_size > self.stats["queue_high_watermark"]:
             self.stats["queue_high_watermark"] = current_queue_size
         
-        logger.info(f"Queued task {request.request_id} with priority {priority} (queue size: {current_queue_size})")
+        logger.info(f"Queued {request.task_type} task {request.request_id} (priority: {priority}, queue: {current_queue_size})")
         return request.request_id
         
     async def process_queue(self):
-        """Main queue processing loop"""
+        """Main queue processing loop - pure load balancing"""
         if self.queue_processor_running:
             return
             
         self.queue_processor_running = True
-        logger.info("Queue processor started")
+        logger.info("Queue processor started (Load Balancing Mode)")
         
         try:
             while True:
                 try:
-                    # Get task from queue (wait up to 1 second)
+                    # Get task from queue
                     try:
                         _, _, task = await asyncio.wait_for(self.task_queue.get(), timeout=1.0)
                     except asyncio.TimeoutError:
-                        continue  # No tasks available, continue loop
+                        continue
                     
-                    # Check if we have available workers for this specific task
-                    worker_result = await self.get_best_worker_for_task(task.request.task_type)
+                    # Find best worker based on load (not task type)
+                    worker_result = await self.get_best_worker_by_load()
                     if not worker_result:
-                        # No capable workers available, put task back in queue with delay
+                        # No workers available, put task back
                         await asyncio.sleep(0.5)
                         await self.task_queue.put((-task.priority, time.time(), task))
                         continue
                     
                     worker_id, worker_data = worker_result
+                    
+                    # Log load balancing decision
+                    logger.info(f"Load balancing: assigning {task.request.task_type} to {worker_id} "
+                              f"(load: {worker_data['status'].current_tasks}/{worker_data['status'].max_tasks})")
                     
                     # Process the task
                     asyncio.create_task(self.execute_task(task, worker_id, worker_data))
@@ -256,29 +241,32 @@ class Coordinator:
         worker_url = worker_data["url"]
         status = worker_data["status"]
         
-        # Log task assignment
+        # Log task assignment with load balancing context
         task_logger.log_task_assignment(
-            request.request_id, worker_id, request.task_type, task.retries
+            request.request_id, worker_id, str(request.task_type), task.retries
         )
         
-        # Mark worker as busy
+        # Mark worker as more loaded
         status.current_tasks += 1
         if status.current_tasks >= status.max_tasks:
             status.status = "busy"
             task_logger.log_worker_status(worker_id, "busy", status.current_tasks)
+        elif status.current_tasks > 0:
+            status.status = "active"
         
         # Track active task
         self.active_tasks[request.request_id] = {
             "worker_id": worker_id,
             "started_at": time.time(),
-            "task": task
+            "task": task,
+            "task_type": request.task_type
         }
         
         try:
             start_time = time.time()
             
             # Send request to worker
-            logger.info(f"Executing task {request.request_id} on worker {worker_id}")
+            logger.info(f"Executing {request.task_type} task {request.request_id} on worker {worker_id}")
             response = await self.client.post(
                 f"{worker_url}/infer",
                 json=request.dict(),
@@ -307,10 +295,10 @@ class Coordinator:
                     request.request_id, worker_id, latency, task.retries, True
                 )
                 
-                logger.info(f"Task {request.request_id} completed successfully on {worker_id} "
+                logger.info(f"Task {request.request_id} ({request.task_type}) completed on {worker_id} "
                           f"(latency: {latency:.3f}s, queue_wait: {queue_wait_time:.3f}s)")
                 
-                # Store result for retrieval
+                # Store result
                 self.active_tasks[request.request_id]["result"] = InferenceResponse(
                     request_id=request.request_id,
                     worker_id=worker_id,
@@ -328,21 +316,19 @@ class Coordinator:
                 
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"Task {request.request_id} failed on worker {worker_id}: {error_msg}")
+            logger.error(f"Task {request.request_id} ({request.task_type}) failed on worker {worker_id}: {error_msg}")
             
-            # Log task failure
+            # Log failure
             task_logger.log_task_completion(
                 request.request_id, worker_id, time.time() - start_time, task.retries, False, error_msg
             )
             
             # Handle retry logic
             task.retries += 1
-            max_retries = getattr(task, 'max_retries', 3)  # ✅ Use getattr with default
-            
-            if task.retries < max_retries:
+            if task.retries < task.max_retries:
                 task_logger.log_task_retry(request.request_id, worker_id, task.retries, error_msg)
-                logger.info(f"Retrying task {request.request_id} (attempt {task.retries + 1}/{max_retries})")
-                # Put back in queue with higher priority (retry)
+                logger.info(f"Retrying task {request.request_id} (attempt {task.retries + 1}/{task.max_retries})")
+                # Put back in queue with higher priority
                 await self.task_queue.put((-10, time.time(), task))
             else:
                 logger.error(f"Task {request.request_id} failed permanently after {task.retries} retries")
@@ -357,12 +343,15 @@ class Coordinator:
         finally:
             # Update worker status
             status.current_tasks = max(0, status.current_tasks - 1)
-            if status.current_tasks < status.max_tasks and status.status == "busy":
+            if status.current_tasks == 0:
                 status.status = "healthy"
-                task_logger.log_worker_status(worker_id, "healthy", status.current_tasks)
+            elif status.current_tasks < status.max_tasks:
+                status.status = "active"
+            
+            task_logger.log_worker_status(worker_id, status.status, status.current_tasks)
     
     async def submit_and_wait(self, request: InferenceRequest, timeout: float = 30.0) -> InferenceResponse:
-        """Submit a task and wait for its completion"""
+        """Submit a task and wait for completion"""
         self.stats["total_requests"] += 1
         
         # Add to queue
@@ -382,7 +371,7 @@ class Coordinator:
                         raise result
                     return result
             
-            await asyncio.sleep(0.1)  # Check every 100ms
+            await asyncio.sleep(0.1)
         
         # Timeout
         if request.request_id in self.active_tasks:
@@ -392,27 +381,41 @@ class Coordinator:
         raise HTTPException(status_code=408, detail="Request timed out")
     
     def get_queue_stats(self) -> dict:
-        """Get queue and processing statistics"""
-        healthy_workers = len([w for w in self.workers.values() if w["status"].status == "healthy"])
+        """Get comprehensive queue and load balancing statistics"""
+        healthy_workers = len([w for w in self.workers.values() if w["status"].status in ["healthy", "active"]])
         busy_workers = len([w for w in self.workers.values() if w["status"].status == "busy"])
         error_workers = len([w for w in self.workers.values() if w["status"].status == "error"])
         
-        return {
+        # Calculate load distribution
+        total_current_tasks = sum(w["status"].current_tasks for w in self.workers.values())
+        total_capacity = sum(w["status"].max_tasks for w in self.workers.values())
+        system_load_percentage = (total_current_tasks / total_capacity * 100) if total_capacity > 0 else 0
+        
+        result = {
             "queue_size": self.task_queue.qsize(),
             "active_tasks": len(self.active_tasks),
             "total_workers": len(self.workers),
             "healthy_workers": healthy_workers,
             "busy_workers": busy_workers,
             "error_workers": error_workers,
+            "system_load_percentage": round(system_load_percentage, 1),
+            "total_current_tasks": total_current_tasks,
+            "total_capacity": total_capacity,
             "stats": self.stats.copy(),
+            "load_balancing_mode": "pure_load_based",
             "workers_detail": {
                 worker_id: {
                     "status": worker_data["status"].status,
                     "current_tasks": worker_data["status"].current_tasks,
-                    "avg_latency": worker_data["status"].avg_latency,
+                    "max_tasks": worker_data["status"].max_tasks,
+                    "load_percentage": round((worker_data["status"].current_tasks / worker_data["status"].max_tasks) * 100, 1),
+                    "avg_latency": round(worker_data["status"].avg_latency, 3),
                     "total_processed": worker_data["status"].total_processed,
-                    "score": self.calculate_worker_score(worker_data)
+                    "load_score": round(self.calculate_worker_load_score(worker_data), 2)
                 }
                 for worker_id, worker_data in self.workers.items()
             }
         }
+        
+        # ✅ Make the entire result JSON-safe
+        return self.make_json_safe(result)
