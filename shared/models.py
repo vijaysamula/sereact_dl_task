@@ -1,3 +1,4 @@
+# File: shared/models.py
 from pydantic import BaseModel
 from typing import Optional, List
 from enum import Enum
@@ -26,6 +27,8 @@ class QueuedTask(BaseModel):
     priority: int = 0  # Higher number = higher priority
     queued_at: float
     retries: int = 0
+    max_retries: int = 3  # ✅ ADD THIS LINE!
+
 class WorkerStatus(BaseModel):
     model_config = {"protected_namespaces": ()}
     
@@ -34,6 +37,6 @@ class WorkerStatus(BaseModel):
     last_heartbeat: float
     model_loaded: bool
     current_tasks: int = 0
-    max_tasks: int = 5  # Maximum concurrent tasks per worker
+    max_tasks: int = 3  # Maximum concurrent tasks per worker
     avg_latency: float = 0.0  # Average response time
     total_processed: int = 0  # Total requests processed

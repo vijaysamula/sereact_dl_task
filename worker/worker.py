@@ -1,5 +1,7 @@
+# Complete fixed worker/worker.py file
+
 import time
-import random
+import random  # ✅ MAKE SURE THIS IS AT THE TOP
 import asyncio
 import logging
 import os
@@ -21,6 +23,24 @@ class Worker:
             "network_delay_min": float(os.getenv("NETWORK_DELAY_MIN", "0.1")),
             "network_delay_max": float(os.getenv("NETWORK_DELAY_MAX", "0.8")),
         }
+        
+        # ✅ ADD IMAGENET CLASSES
+        self.imagenet_classes = [
+            "tench", "goldfish", "great_white_shark", "tiger_shark", "hammerhead",
+            "electric_ray", "stingray", "rooster", "hen", "ostrich", "brambling",
+            "goldfinch", "house_finch", "junco", "indigo_bunting", "robin", "bulbul",
+            "jay", "magpie", "chickadee", "water_ouzel", "kite", "bald_eagle", "vulture",
+            "great_grey_owl", "European_fire_salamander", "common_newt", "eft", "spotted_salamander",
+            "axolotl", "bullfrog", "tree_frog", "tailed_frog", "loggerhead", "leatherback_turtle",
+            "mud_turtle", "terrapin", "box_turtle", "banded_gecko", "common_iguana",
+            "American_chameleon", "whiptail", "agama", "frilled_lizard", "alligator_lizard",
+            "Gila_monster", "green_lizard", "African_chameleon", "Komodo_dragon", "African_crocodile",
+            "American_alligator", "triceratops", "thunder_snake", "ringneck_snake",
+            "hognose_snake", "green_snake", "king_snake", "garter_snake", "water_snake",
+            "vine_snake", "night_snake", "boa_constrictor", "rock_python", "Indian_cobra",
+            "green_mamba", "sea_snake", "horned_viper", "diamondback", "sidewinder"
+        ]
+        
         self.load_models()
         
     def load_models(self):
@@ -79,13 +99,6 @@ class Worker:
                     model="distilbert-base-uncased-finetuned-sst-2-english",
                     device=-1
                 )
-            
-            # ImageNet class labels for image classification
-            self.imagenet_classes = [
-                "tench", "goldfish", "great_white_shark", "tiger_shark", "hammerhead",
-                "electric_ray", "stingray", "rooster", "hen", "ostrich", "brambling",
-                "goldfinch", "house_finch", "junco", "indigo_bunting", "robin"
-            ]
             
             logger.info(f"Worker {self.worker_id}: All models loaded successfully")
         except Exception as e:
@@ -147,6 +160,42 @@ class Worker:
                     "worker_id": self.worker_id,
                     "task_type": "image_classification"
                 }
+            
+            elif request.task_type in [TaskType.CLIP_TEXT_SIMILARITY, TaskType.CLIP_TEXT_TO_IMAGE]:
+                # Check if we have CLIP model loaded
+                if request.task_type not in self.models:
+                    # Fallback to text classification
+                    logger.warning(f"Worker {self.worker_id}: CLIP not available, falling back to text classification")
+                    if TaskType.TEXT_CLASSIFICATION in self.models:
+                        result = self.models[TaskType.TEXT_CLASSIFICATION](request.data)
+                        return {
+                            "prediction": result[0]["label"],
+                            "confidence": result[0]["score"],
+                            "worker_id": self.worker_id,
+                            "task_type": "text_classification_fallback",
+                            "original_task_type": str(request.task_type)
+                        }
+                    else:
+                        raise Exception(f"CLIP model not available and no fallback")
+                
+                # CLIP processing - simplified simulation
+                similarity_scores = {
+                    "a photo of a cat": random.uniform(0.7, 0.9),
+                    "a photo of a dog": random.uniform(0.2, 0.4),
+                    "a car": random.uniform(0.1, 0.3),
+                    "beautiful sunset": random.uniform(0.3, 0.6)
+                }
+                
+                best_match = max(similarity_scores.keys(), key=lambda k: similarity_scores[k])
+                
+                return {
+                    "prediction": best_match,
+                    "confidence": similarity_scores[best_match],
+                    "similarities": similarity_scores,
+                    "worker_id": self.worker_id,
+                    "task_type": str(request.task_type)
+                }
+                
             else:
                 raise Exception(f"Unsupported task type: {request.task_type}")
                 

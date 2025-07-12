@@ -337,9 +337,11 @@ class Coordinator:
             
             # Handle retry logic
             task.retries += 1
-            if task.retries < task.max_retries:
+            max_retries = getattr(task, 'max_retries', 3)  # ✅ Use getattr with default
+            
+            if task.retries < max_retries:
                 task_logger.log_task_retry(request.request_id, worker_id, task.retries, error_msg)
-                logger.info(f"Retrying task {request.request_id} (attempt {task.retries + 1}/{task.max_retries})")
+                logger.info(f"Retrying task {request.request_id} (attempt {task.retries + 1}/{max_retries})")
                 # Put back in queue with higher priority (retry)
                 await self.task_queue.put((-10, time.time(), task))
             else:
