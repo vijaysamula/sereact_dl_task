@@ -1,0 +1,51 @@
+# docker-compose.test.yml - High failure rate for testing
+version: '3.8'
+
+services:
+  coordinator:
+    extends:
+      file: docker-compose.yml
+      service: coordinator
+
+  worker-1:
+    extends:
+      file: docker-compose.yml
+      service: worker-1
+    environment:
+      - WORKER_ID=worker-1
+      - PYTHONPATH=/app
+      # HIGH failure rates for testing
+      - CRASH_PROBABILITY=0.15        # 15% crash rate
+      - TIMEOUT_PROBABILITY=0.20      # 20% timeout rate
+      - NETWORK_DELAY_MIN=0.5
+      - NETWORK_DELAY_MAX=2.0
+
+  worker-2:
+    extends:
+      file: docker-compose.yml
+      service: worker-2
+    environment:
+      - WORKER_ID=worker-2
+      - PYTHONPATH=/app
+      # MEDIUM failure rates
+      - CRASH_PROBABILITY=0.10
+      - TIMEOUT_PROBABILITY=0.15
+      - NETWORK_DELAY_MIN=0.3
+      - NETWORK_DELAY_MAX=1.5
+
+  worker-3:
+    extends:
+      file: docker-compose.yml
+      service: worker-3
+    environment:
+      - WORKER_ID=worker-3
+      - PYTHONPATH=/app
+      # LOW failure rates (stable worker)
+      - CRASH_PROBABILITY=0.05
+      - TIMEOUT_PROBABILITY=0.08
+      - NETWORK_DELAY_MIN=0.1
+      - NETWORK_DELAY_MAX=0.5
+
+networks:
+  ai-network:
+    driver: bridge

@@ -1,73 +1,112 @@
 # Distributed AI Inference System
 
-A microservice-based AI inference system that simulates distributed processing with multiple worker nodes, fault tolerance, and load balancing.
+A microservice-based AI inference system with fault tolerance, load balancing, and batch processing.
 
 ## 🎯 Assignment Requirements Met
 
-✅ **Microservice Architecture**: Coordinator + 3 Worker services  
+✅ **Microservice Architecture**: Coordinator + 3 Workers  
 ✅ **Multiple Models**: DistilBERT, MobileNetV2, CLIP  
-✅ **Fault Tolerance**: Simulated failures, retries, health checks  
-✅ **Batching & Queuing**: Task queue with batch processing  
-✅ **Logging & Monitoring**: Detailed task logs + CLI monitor  
+✅ **Fault Tolerance**: Failures, retries, health checks  
+✅ **Batching & Queuing**: Task queue with batching  
+✅ **Logging & Monitoring**: Detailed logs + CLI monitor  
 ✅ **Docker Compose**: Full containerization  
 ✅ **Async I/O**: FastAPI with asyncio  
 ✅ **Burst Traffic Test**: Per-request success/failure reporting  
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Docker and Docker Compose
-- 4GB+ RAM (for model loading)
-
-### 1. Start the System
 ```bash
+# Clone repository
 git clone https://github.com/vijaysamula/sereact_dl_task.git
 cd sereact_dl_task
 
-# Start all services
+# Start system (Docker)
 docker compose up --build
 
-# Wait 3-5 minutes for models to load
-# Look for "Models loaded successfully" messages
-```
+# Wait for models to load (3-5 minutes)
+# Look for "Model loading complete" messages
 
-### 2. Test Basic Functionality
-```bash
-# Test text classification
+# Install monitoring tools locally
+pip install -r requirements-local.txt
+
+# Test basic functionality
 curl -X POST "http://localhost:8000/infer" \
   -H "Content-Type: application/json" \
-  -d '{
-    "request_id": "test-1",
-    "task_type": "text_classification",
-    "data": "I love this product!"
-  }'
+  -d '{"request_id": "test-1", "task_type": "text_classification", "data": "I love this!"}'
 
-# Test image classification
-curl -X POST "http://localhost:8000/infer" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "request_id": "test-2", 
-    "task_type": "image_classification",
-    "data": "dummy_image_data"
-  }'
-```
-
-### 3. Monitor the System
-```bash
-# Real-time CLI monitor
+# Monitor system (CLI)
 python monitor_cli.py
 
-# Check system status
-curl http://localhost:8000/status
+# Web dashboard
+streamlit run streamlit_dashboard.py
+
+# Run burst traffic test (Assignment Requirement)
+python burst_traffic_test.py
 ```
 
-### 4. Run Burst Traffic Test (Assignment Requirement)
-```bash
-# Burst traffic test with per-request success/failure reporting
-python burst_traffic_test.py --pattern mixed
+## 🚨 Failure Simulation & Testing
 
-# Simple load test
-python simple_load_test.py
+### Method 1: Stop Worker Container
+```bash
+# Simulate worker failure
+docker compose stop worker-1
+
+# Test failover (should work with remaining workers)
+curl -X POST "http://localhost:8000/infer" \
+  -H "Content-Type: application/json" \
+  -d '{"request_id": "failover-test", "task_type": "text_classification", "data": "test"}'
+
+# Restart worker
+docker compose start worker-1
+```
+
+### Method 2: Use Failure Simulation Script
+```bash
+python simulate_failures.py
+```
+
+### Method 3: High Failure Testing
+```bash
+# Use high failure rate config
+docker compose -f docker-compose.yml -f docker-compose.test.yml up
+```
+
+## Expected Outputs
+
+### Successful Request
+```json
+{
+  "request_id": "test-1",
+  "worker_id": "worker-2",
+  "result": {
+    "prediction": "POSITIVE",
+    "confidence": 0.9998,
+    "task_type": "text_classification"
+  },
+  "latency": 0.234,
+  "retry_count": 0
+}
+```
+
+### During Failure (Automatic Failover)
+```json
+{
+  "request_id": "failover-test",
+  "worker_id": "worker-3",  // Auto-routed to healthy worker
+  "result": {"prediction": "POSITIVE"},
+  "latency": 0.345,
+  "retry_count": 0
+}
+```
+
+### Burst Test Output
+```
+[14:32:01.234] 🚀 Request burst-001: Sending text_classification task...
+[14:32:01.456] ✅ Request burst-001: SUCCESS (0.223s, worker-1, POSITIVE)
+[14:32:01.678] ❌ Request burst-002: FAILED (HTTP 500, 1.234s, Worker crash)
+[14:32:02.123] ✅ Request burst-003: SUCCESS (0.445s, worker-2, POSITIVE)
+
+📊 SUMMARY: 4/5 successful (80.0%), avg latency: 0.334s
 ```
 
 ## 📊 API Endpoints
@@ -81,116 +120,57 @@ python simple_load_test.py
 
 ## 🧪 Supported Task Types
 
-- **text_classification**: Sentiment analysis using DistilBERT
-- **image_classification**: Object recognition using MobileNetV2  
-- **clip_text_similarity**: Text similarity using CLIP
-- **clip_text_to_image**: Text-to-image matching using CLIP
+- **text_classification**: Sentiment analysis (DistilBERT)
+- **image_classification**: Object recognition (MobileNetV2)  
+- **clip_text_similarity**: Text similarity (CLIP)
+- **clip_text_to_image**: Text-to-image matching (CLIP)
 
 ## 🏗️ Architecture
 
 ```
 Client → Coordinator → Worker Pool
-                    ├── Worker 1 (DistilBERT)
-                    ├── Worker 2 (MobileNetV2)  
-                    └── Worker 3 (CLIP)
+                    ├── Worker 1 (All Models)
+                    ├── Worker 2 (All Models)  
+                    └── Worker 3 (All Models)
 ```
-
-## 🔧 Failure Simulation
-
-Configure via environment variables:
-- `CRASH_PROBABILITY=0.02` (2% crash rate)
-- `TIMEOUT_PROBABILITY=0.03` (3% timeout rate)
-- `NETWORK_DELAY_MIN=0.1` (Min network delay)
-- `NETWORK_DELAY_MAX=0.8` (Max network delay)
 
 ## 📁 Key Files
 
 ```
-├── docker-compose.yml          # Multi-service orchestration
+├── docker-compose.yml          # Multi-service orchestration  
+├── requirements.txt            # Docker container dependencies
+├── requirements-local.txt      # Local monitoring tools
 ├── coordinator/
-│   ├── coordinator.py          # Main coordinator logic
-│   └── main.py                 # FastAPI app
+│   ├── coordinator.py          # Load balancing & fault tolerance
+│   └── main.py                 # FastAPI coordinator
 ├── worker/
-│   ├── worker.py              # Worker implementation
-│   └── main.py                # Worker FastAPI app
-├── shared/
-│   ├── models.py              # Data models
-│   └── logging_setup.py       # Logging setup
-├── monitor_cli.py             # Real-time monitor
+│   ├── worker.py              # Model loading & batch processing
+│   └── main.py                # FastAPI worker
+├── shared/models.py           # Data models
+├── monitor_cli.py             # Enhanced CLI monitor with load balancing insights
+├── streamlit_dashboard.py    # Web dashboard with real-time charts (bonus)
 ├── burst_traffic_test.py      # Assignment requirement
-└── simple_load_test.py        # Basic load test
-```
-
-## 🚨 Testing Scenarios
-
-### 1. Normal Operation
-```bash
-python simple_load_test.py
-```
-
-### 2. Burst Traffic (Assignment Requirement)
-```bash
-python burst_traffic_test.py --pattern burst
-```
-
-### 3. Failure Simulation
-```bash
-# Stop a worker to test fault tolerance
-docker compose stop worker-1
-
-# System automatically routes to other workers
+└── simulate_failures.py      # Failure testing
 ```
 
 ## 🛠️ Troubleshooting
 
 **Models not loading?**
 ```bash
-# Check worker logs
-docker compose logs worker-1
-
-# Ensure sufficient memory
-docker stats
+docker compose logs worker-1  # Check for memory issues
 ```
 
 **Connection errors?**
 ```bash
-# Wait for full startup (3-5 minutes)
-curl http://localhost:8000/status
+docker compose ps            # Check all services running
+curl http://localhost:8000/status  # Test coordinator
 ```
 
-**High latency?**
-```bash
-# Monitor real-time
-python monitor_cli.py
-```
-
-## 📈 Expected Performance
-
-- **Text Classification**: 0.2-0.6s
-- **Image Classification**: 0.5-1.0s
-- **CLIP Tasks**: 0.8-1.5s
-- **Success Rate**: >95% under normal load
-- **Automatic Retries**: Up to 3 attempts
-- **Health Checks**: Every 10 seconds
-
-## 📝 Assignment Compliance
-
-This implementation fulfills all assignment requirements:
-
-1. ✅ **Microservice Architecture**: REST-based coordinator + 3 workers
-2. ✅ **Fault Tolerance**: Simulated failures, retries, health monitoring
-3. ✅ **Batching & Queuing**: Priority queue with efficient batching
-4. ✅ **Logging**: Detailed task logs with metadata
-5. ✅ **Model Usage**: DistilBERT, MobileNetV2, CLIP models
-6. ✅ **Docker Compose**: Full containerization
-7. ✅ **Async I/O**: FastAPI throughout
-8. ✅ **Burst Traffic Test**: Per-request success/failure reporting
-9. ✅ **Live Monitoring**: CLI dashboard
-
-## 🙏 Notes
+## 📝 Notes
 
 - Models load in ~3-5 minutes on first startup
-- Each worker supports all task types for better load distribution
-- System automatically handles worker failures with retries
+- Each worker supports all task types for load balancing
+- System automatically handles failures with retries
 - All logs stored in `logs/task_operations.log`
-- Monitor provides real-time system visibility
+- **Enhanced CLI monitor** shows load balancing insights and task distribution
+- **Streamlit dashboard** provides web interface with real-time charts
