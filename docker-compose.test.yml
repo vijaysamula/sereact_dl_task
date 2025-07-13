@@ -1,6 +1,4 @@
 # docker-compose.test.yml - High failure rate for testing
-version: '3.8'
-
 services:
   coordinator:
     extends:
